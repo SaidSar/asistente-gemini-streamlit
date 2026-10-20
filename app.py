@@ -100,21 +100,39 @@ if "chat_session" not in st.session_state:
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.7
     )
+    
+    # Modelo predeterminado compatible
+    MODELO_SELECCIONADO = "gemini-2.5-flash"
+    
     st.session_state.chat_session = st.session_state.client.chats.create(
-        model="gemini-2.5-flash",
+        model=MODELO_SELECCIONADO,
         config=config
     )
 
-    # Disparar automáticamente la primera pregunta
+    # Disparar automáticamente la primera pregunta de forma segura
     with st.spinner("Iniciando la entrevista técnica..."):
         first_prompt = (
             f"Saluda brevemente al candidato y hazle directamente la primera pregunta técnica "
             f"adaptada al puesto de {selected_role}."
         )
-        response = st.session_state.chat_session.send_message(first_prompt)
-        st.session_state.messages.append({"role": "assistant", "content": response.text})
-        st.session_state.question_count = 1
-
+        try:
+            response = st.session_state.chat_session.send_message(first_prompt)
+            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            st.session_state.question_count = 1
+        except Exception as e:
+            # Fallback a gemini-2.0-flash si el modelo anterior falla en la cuenta
+            try:
+                st.session_state.chat_session = st.session_state.client.chats.create(
+                    model="gemini-2.0-flash",
+                    config=config
+                )
+                response = st.session_state.chat_session.send_message(first_prompt)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                st.session_state.question_count = 1
+            except Exception as e_final:
+                st.error(f"❌ Error al iniciar la entrevista con la API de Gemini: {e_final}")
+                st.info("Verifica que tu GEMINI_API_KEY en Streamlit Cloud Secrets sea válida y activa.")
+                st.stop()
 # ==============================================================================
 # 6. RENDERIZADO DEL HISTORIAL DE MENSAJES
 # ==============================================================================
