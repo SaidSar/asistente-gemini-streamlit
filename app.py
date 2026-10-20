@@ -52,7 +52,6 @@ if "final_report" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configuración del Puesto")
     
-    # El selector queda deshabilitado una vez iniciada la entrevista para evitar inconsistencias
     selected_role = st.selectbox(
         "Selecciona la vacante:",
         [
@@ -66,7 +65,6 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"**Progreso:** Pregunta `{min(st.session_state.question_count, 3)}` de `3`")
 
-    # Función para reinicio limpio de sesión
     def reset_interview():
         st.session_state.messages = []
         st.session_state.question_count = 0
@@ -80,7 +78,7 @@ with st.sidebar:
         st.rerun()
 
 # ==============================================================================
-# 5. INSTRUCCIONES DEL SISTEMA (ANTI-JAILBREAK Y ROL TÉCNICO)
+# 5. INSTRUCCIONES DEL SISTEMA Y SESIÓN DE CHAT (GEMINI 3.8 FLASH)
 # ==============================================================================
 SYSTEM_INSTRUCTION = (
     f"Eres un Líder Técnico Virtual experto, exigente y profesional realizando una entrevista técnica "
@@ -94,22 +92,18 @@ SYSTEM_INSTRUCTION = (
     "4. Mantén tus intervenciones concisas, claras y profesionales."
 )
 
-# Inicializar sesión de chat si aún no existe
 if "chat_session" not in st.session_state:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.7
     )
     
-    # Modelo predeterminado compatible
-    MODELO_SELECCIONADO = "gemini-2.5-flash"
-    
     st.session_state.chat_session = st.session_state.client.chats.create(
-        model=MODELO_SELECCIONADO,
+        model="gemini-3.8-flash",
         config=config
     )
 
-    # Disparar automáticamente la primera pregunta de forma segura
+    # Disparar automáticamente la primera pregunta técnica
     with st.spinner("Iniciando la entrevista técnica..."):
         first_prompt = (
             f"Saluda brevemente al candidato y hazle directamente la primera pregunta técnica "
@@ -120,19 +114,9 @@ if "chat_session" not in st.session_state:
             st.session_state.messages.append({"role": "assistant", "content": response.text})
             st.session_state.question_count = 1
         except Exception as e:
-            # Fallback a gemini-2.0-flash si el modelo anterior falla en la cuenta
-            try:
-                st.session_state.chat_session = st.session_state.client.chats.create(
-                    model="gemini-2.0-flash",
-                    config=config
-                )
-                response = st.session_state.chat_session.send_message(first_prompt)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-                st.session_state.question_count = 1
-            except Exception as e_final:
-                st.error(f"❌ Error al iniciar la entrevista con la API de Gemini: {e_final}")
-                st.info("Verifica que tu GEMINI_API_KEY en Streamlit Cloud Secrets sea válida y activa.")
-                st.stop()
+            st.error(f"❌ Error al iniciar la entrevista con la API de Gemini: {e}")
+            st.stop()
+
 # ==============================================================================
 # 6. RENDERIZADO DEL HISTORIAL DE MENSAJES
 # ==============================================================================
@@ -147,12 +131,10 @@ if not st.session_state.interview_finished:
     user_input = st.chat_input("Escribe tu respuesta técnica...")
     
     if user_input:
-        # Registrar y mostrar la respuesta del usuario
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Si ya respondió la tercera pregunta, finalizamos y generamos reporte
         if st.session_state.question_count >= 3:
             st.session_state.interview_finished = True
             
@@ -176,7 +158,6 @@ if not st.session_state.interview_finished:
                 st.rerun()
 
         else:
-            # Preguntas 2 y 3: Gemini evalúa internamente y formula la siguiente
             with st.chat_message("assistant"):
                 with st.spinner("Evaluando y redactando la siguiente pregunta..."):
                     try:
