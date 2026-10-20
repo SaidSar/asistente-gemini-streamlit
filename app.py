@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import time
 from google import genai
 from google.genai import types
 
@@ -46,8 +47,20 @@ if "interview_finished" not in st.session_state:
 if "final_report" not in st.session_state:
     st.session_state.final_report = None
 
+# Lista ordenada de endpoints válidos para texto con fallback progresivo
+AVAILABLE_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-4-argon"
+]
+
+if "active_model" not in st.session_state:
+    st.session_state.active_model = AVAILABLE_MODELS[0]
+
 # ==============================================================================
-# 4. BARRA LATERAL (ROL Y REINICIO LIMPIO)
+# 4. BARRA LATERAL (ROL, ESTADO Y REINICIO LIMPIO)
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ Configuración del Puesto")
@@ -64,6 +77,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown(f"**Progreso:** Pregunta `{min(st.session_state.question_count, 3)}` de `3`")
+    st.caption(f"Motor activo: `{st.session_state.active_model}`")
 
     def reset_interview():
         st.session_state.messages = []
@@ -78,7 +92,7 @@ with st.sidebar:
         st.rerun()
 
 # ==============================================================================
-# 5. INSTRUCCIONES DEL SISTEMA Y SESIÓN DE CHAT (GEMINI 3.8 FLASH)
+# 5. INSTRUCCIÓN DEL SISTEMA Y FUNCIÓN ROBUSTA MULTI-FALLBACK
 # ==============================================================================
 SYSTEM_INSTRUCTION = (
     f"Eres un Líder Técnico Virtual experto, exigente y profesional realizando una entrevista técnica "
@@ -92,29 +106,68 @@ SYSTEM_INSTRUCTION = (
     "4. Mantén tus intervenciones concisas, claras y profesionales."
 )
 
-if "chat_session" not in st.session_state:
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.7
-    )
-    
-    st.session_state.chat_session = st.session_state.client.chats.create(
-        model="gemini-3.8-flash",
-        config=config
-    )
+config = types.GenerateContentConfig(
+    system_instruction=SYSTEM_INSTRUCTION,
+    temperature=0.7
+)
 
-    # Disparar automáticamente la primera pregunta técnica
-    with st.spinner("Iniciando la entrevista técnica..."):
+def safe_send_message(prompt_text):
+    """
+    Envía mensajes probando los modelos de la lista AVAILABLE_MODELS.
+    Si un modelo arroja 503 (saturación), 429 (cuota) o 404, pasa automáticamente al siguiente.
+    """
+    if "chat_session" not in st.session_state:
+        st.session_state.chat_session = st.session_state.client.chats.create(
+            model=st.session_state.active_model,
+            config=config
+        )
+
+    # Ordenar modelos priorizando el modelo activo y luego el resto
+    models_to_try = [st.session_state.active_model] + [
+        m for m in AVAILABLE_MODELS if m != st.session_state.active_model
+    ]
+
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            if st.session_state.active_model != model_name:
+                st.session_state.active_model = model_name
+                st.session_state.chat_session = st.session_state.client.chats.create(
+                    model=model_name,
+                    config=config
+                )
+                # Resincronizar contexto si ya había historial
+                for msg in st.session_state.messages:
+                    if msg["role"] == "user":
+                        try:
+                            st.session_state.chat_session.send_message(msg["content"])
+                        except Exception:
+                            pass
+
+            response = st.session_state.chat_session.send_message(prompt_text)
+            return response.text
+
+        except Exception as e:
+            last_error = e
+            time.sleep(0.4)
+            continue
+
+    raise last_error
+
+# Disparar automáticamente la primera pregunta si la sesión está limpia
+if len(st.session_state.messages) == 0:
+    with st.spinner("Iniciando la entrevista técnica con IA..."):
         first_prompt = (
             f"Saluda brevemente al candidato y hazle directamente la primera pregunta técnica "
             f"adaptada al puesto de {selected_role}."
         )
         try:
-            response = st.session_state.chat_session.send_message(first_prompt)
-            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            first_response = safe_send_message(first_prompt)
+            st.session_state.messages.append({"role": "assistant", "content": first_response})
             st.session_state.question_count = 1
         except Exception as e:
-            st.error(f"❌ Error al iniciar la entrevista con la API de Gemini: {e}")
+            st.error(f"❌ No se pudo conectar con los modelos disponibles: {e}")
+            st.info("Haz clic en 'Reiniciar Entrevista' en la barra lateral para volver a intentar.")
             st.stop()
 
 # ==============================================================================
@@ -153,17 +206,20 @@ if not st.session_state.interview_finished:
                   - [Segundo concepto que debe reforzar]
                 - **Dictamen Final:** `APROBADO` o `NO APROBADO` (usa exactamente una de estas dos opciones).
                 """
-                report_response = st.session_state.chat_session.send_message(report_prompt)
-                st.session_state.final_report = report_response.text
-                st.rerun()
+                try:
+                    report_text = safe_send_message(report_prompt)
+                    st.session_state.final_report = report_text
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error al generar el reporte final: {e}")
 
         else:
             with st.chat_message("assistant"):
                 with st.spinner("Evaluando y redactando la siguiente pregunta..."):
                     try:
-                        response = st.session_state.chat_session.send_message(user_input)
-                        st.markdown(response.text)
-                        st.session_state.messages.append({"role": "assistant", "content": response.text})
+                        reply_text = safe_send_message(user_input)
+                        st.markdown(reply_text)
+                        st.session_state.messages.append({"role": "assistant", "content": reply_text})
                         st.session_state.question_count += 1
                     except Exception as e:
                         st.error(f"❌ Error al consultar la API: {e}")
